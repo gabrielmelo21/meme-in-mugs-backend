@@ -9,6 +9,11 @@ from firebase_admin import credentials, storage
 import uuid
 from dotenv import load_dotenv
 import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
 
 app = Flask(__name__)
@@ -54,7 +59,9 @@ def hello():
     return 'Hello, World!'
 
 
-# Endpoint para listar os produtos
+
+
+# Endpoint para listar os produtos por categoria
 @app.route('/products', methods=['POST'])
 def get_products():
     # Recebe a categoria do JSON de entrada
@@ -198,6 +205,98 @@ def upload_file():
         return file_url, 200
     else:
         return 'Erro ao fazer upload do arquivo', 500
+
+
+
+
+
+
+# Função auxiliar para carregar o arquivo JSON
+def load_products():
+    with open('products.json', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    return data
+
+# Endpoint para listar todos os produtos
+@app.route('/all_products', methods=['GET'])
+def list_all_products():
+    data = load_products()
+
+    all_products = []
+    # Iterar sobre todas as categorias e seus produtos
+    for category in data["products_by_category"]:
+        all_products.extend(category["products"])  # Adicionar todos os produtos à lista
+
+    return jsonify(all_products)  # Retorna a lista como JSON
+
+
+
+
+
+# SISTEMA DE BACKUP DO ARQUIVO .JSON de produtos
+
+# Função para enviar o e-mail
+def send_email(subject, body, file_path):
+    from_address = "binance.letmein@gmail.com"  # Seu e-mail
+    password = os.getenv("EMAIL_PASSWORD")  # Sua senha
+    print(password)
+
+    # Configura o servidor de e-mail (Gmail como exemplo)
+    server = smtplib.SMTP('smtp.gmail.com', 587)
+    server.starttls()
+    server.login(from_address, password)
+
+    # Cria a mensagem de e-mail
+    msg = MIMEMultipart()
+    msg['From'] = from_address
+    msg['To'] = "gabriel.user0100@gmail.com"
+    msg['Subject'] = subject
+
+    # Adiciona o corpo do e-mail
+    msg.attach(MIMEText(body, 'plain'))
+
+    # Anexa o arquivo JSON
+    with open(file_path, 'rb') as attachment:
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(attachment.read())
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(file_path)}')
+        msg.attach(part)
+
+    # Envia o e-mail
+    server.sendmail(from_address, from_address, msg.as_string())  # Enviando para o mesmo endereço
+    server.quit()
+
+# Endpoint para enviar o e-mail
+@app.route('/send-email', methods=['POST'])
+def send_email_route():
+    # Caminho do arquivo JSON
+    file_path = 'products.json'
+    if not os.path.exists(file_path):
+        return jsonify({"error": "Arquivo produtos.json não encontrado"}), 400
+
+    # Gera a data atual no formato desejado
+    current_date = datetime.now().strftime("%d/%m/%Y")  # Formato: dia/mês/ano
+    subject = f"Backup do dia {current_date}"  # Título do e-mail com a data
+
+    try:
+        send_email(subject, "Backup de products.json.", file_path)
+        return jsonify({"message": "E-mail enviado com sucesso!"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
