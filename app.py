@@ -264,7 +264,7 @@ def send_email(subject, body, file_path):
         msg.attach(part)
 
     # Envia o e-mail
-    server.sendmail(from_address, from_address, msg.as_string())  # Enviando para o mesmo endereço
+    server.sendmail(from_address, msg['To'], msg.as_string())  # Enviando para o mesmo endereço
     server.quit()
 
 # Endpoint para enviar o e-mail
