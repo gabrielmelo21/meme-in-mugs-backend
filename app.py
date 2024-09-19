@@ -15,11 +15,9 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 
-
 app = Flask(__name__)
 # Configurar CORS
 CORS(app)
-
 
 # Carregar as variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -51,39 +49,17 @@ firebase_admin.initialize_app(cred, {
 })
 
 
+# Função auxiliar para salvar o arquivo JSON
+def save_products(data):
+    with open('products.json', 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 
-
-@app.route('/')
-def hello():
-    return 'Hello, World!'
-
-
-
-
-# Endpoint para listar os produtos por categoria
-@app.route('/products', methods=['POST'])
-def get_products():
-    # Recebe a categoria do JSON de entrada
-    data = request.get_json()
-    category = data.get('category')
-
-    # Tenta abrir e carregar os dados do arquivo products.json
-    try:
-        with open('products.json', 'r') as file:
-            products_data = json.load(file)
-    except FileNotFoundError:
-        return jsonify({"message": "Products file not found"}), 404
-
-    # Procura a categoria especificada
-    for category_entry in products_data['products_by_category']:
-        if category_entry['category'] == category:
-            # Embaralha a lista de produtos
-            products = category_entry['products']
-            random.shuffle(products)
-            return jsonify(products), 200
-
-
+# Sua função auxiliar para carregar o arquivo JSON
+def load_products():
+    with open('products.json', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    return data
 
 
 # Função para garantir que o arquivo products.json tenha a estrutura inicial
@@ -111,62 +87,6 @@ def initialize_products_file():
         pass
 
 
-
-
-
-
-
-
-@app.route('/add_product', methods=['POST'])
-def add_product():
-    # Recebe os dados do produto do request
-    data = request.get_json()
-    product_name = data['product_name']
-    product_price = data['product_price']
-    product_image = data['product_image']
-    category = data['category']
-
-    # Novo produto a ser adicionado
-    new_product = {
-        "product_name": product_name,
-        "product_price": product_price,
-        "product_image": product_image
-    }
-
-    # Tenta abrir e carregar os dados do arquivo products.json
-    try:
-        with open('products.json', 'r') as file:
-            products_data = json.load(file)
-    except FileNotFoundError:
-        # Inicializa o arquivo se ele não existir
-        initialize_products_file()
-        with open('products.json', 'r') as file:
-            products_data = json.load(file)
-
-    # Verifica se a categoria é válida
-    valid_categories = {cat['category'] for cat in products_data['products_by_category']}
-    if category not in valid_categories:
-        return jsonify({"message": "Invalid category"}), 400
-
-    # Atualiza a categoria com o novo produto
-    category_found = False
-    for category_entry in products_data['products_by_category']:
-        if category_entry['category'] == category:
-            category_entry['products'].append(new_product)
-            category_found = True
-            break
-
-    # Se a categoria não existir, retorna erro
-    if not category_found:
-        return jsonify({"message": "Category not found"}), 400
-
-    # Salva os dados atualizados de volta no arquivo
-    with open('products.json', 'w') as file:
-        json.dump(products_data, file, indent=4)
-
-    return jsonify({"message": "Product created successfully"}), 201
-
-
 # Função para fazer upload da imagem gerada para o Firebase Storage
 def upload_to_firebase(file):
     try:
@@ -190,50 +110,6 @@ def upload_to_firebase(file):
         print(f"Erro ao fazer upload do arquivo: {e}")
         return None
 
-
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    if 'file' not in request.files:
-        return 'No file part', 400
-
-    file = request.files['file']
-    if file.filename == '':
-        return 'No selected file', 400
-
-    file_url = upload_to_firebase(file)
-    if file_url:
-        return file_url, 200
-    else:
-        return 'Erro ao fazer upload do arquivo', 500
-
-
-
-
-
-
-# Função auxiliar para carregar o arquivo JSON
-def load_products():
-    with open('products.json', 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    return data
-
-# Endpoint para listar todos os produtos
-@app.route('/all_products', methods=['GET'])
-def list_all_products():
-    data = load_products()
-
-    all_products = []
-    # Iterar sobre todas as categorias e seus produtos
-    for category in data["products_by_category"]:
-        all_products.extend(category["products"])  # Adicionar todos os produtos à lista
-
-    return jsonify(all_products)  # Retorna a lista como JSON
-
-
-
-
-
-# SISTEMA DE BACKUP DO ARQUIVO .JSON de produtos
 
 # Função para enviar o e-mail
 def send_email(subject, body, file_path):
@@ -267,6 +143,142 @@ def send_email(subject, body, file_path):
     server.sendmail(from_address, msg['To'], msg.as_string())  # Enviando para o mesmo endereço
     server.quit()
 
+@app.route('/')
+def hello():
+    return 'Hello, World!'
+
+
+# Endpoint para listar os produtos por categoria
+@app.route('/products', methods=['POST'])
+def get_products():
+    # Recebe a categoria do JSON de entrada
+    data = request.get_json()
+    category = data.get('category')
+
+    # Tenta abrir e carregar os dados do arquivo products.json
+    try:
+        with open('products.json', 'r') as file:
+            products_data = json.load(file)
+    except FileNotFoundError:
+        return jsonify({"message": "Products file not found"}), 404
+
+    # Procura a categoria especificada
+    for category_entry in products_data['products_by_category']:
+        if category_entry['category'] == category:
+            # Embaralha a lista de produtos
+            products = category_entry['products']
+            random.shuffle(products)
+            return jsonify(products), 200
+
+
+# Endpoint para remover o produto pelo product_name
+@app.route('/remove-product', methods=['POST'])
+def remove_product():
+    data = request.json
+    product_name = data.get('product_name')
+
+    # Carregar produtos do arquivo JSON
+    products_data = load_products()
+
+    # Procurar e remover o produto em todas as categorias
+    for category in products_data["products_by_category"]:
+        category["products"] = [product for product in category["products"] if product["product_name"] != product_name]
+
+    # Salvar o JSON atualizado
+    save_products(products_data)
+
+    return jsonify({"message": f"Produto '{product_name}' removido com sucesso!"})
+
+
+@app.route('/add_product', methods=['POST'])
+def add_product():
+    # Recebe os dados do produto do request
+    data = request.get_json()
+    product_name = data['product_name']
+    product_price = data['product_price']
+    product_image = data['product_image']
+    category = data['category']
+    product_video = data.get('product_video', False)  # Obtém o valor
+
+    # Garante que product_video é um booleano
+    product_video = str(product_video).lower() in ['true', '1', 'yes']
+
+    # Novo produto a ser adicionado
+    new_product = {
+        "product_name": product_name,
+        "product_price": product_price,
+        "product_image": product_image,
+        "product_video": product_video  # Valor convertido para booleano
+    }
+
+    # Tenta abrir e carregar os dados do arquivo products.json
+    try:
+        with open('products.json', 'r', encoding='utf-8') as file:
+            products_data = json.load(file)
+    except FileNotFoundError:
+        # Inicializa o arquivo se ele não existir
+        initialize_products_file()
+        with open('products.json', 'r', encoding='utf-8') as file:
+            products_data = json.load(file)
+
+    # Verifica se a categoria é válida
+    valid_categories = {cat['category'] for cat in products_data['products_by_category']}
+    if category not in valid_categories:
+        return jsonify({"message": "Invalid category"}), 400
+
+    # Atualiza a categoria com o novo produto
+    category_found = False
+    for category_entry in products_data['products_by_category']:
+        if category_entry['category'] == category:
+            category_entry['products'].append(new_product)
+            category_found = True
+            break
+
+    # Se a categoria não existir, retorna erro
+    if not category_found:
+        return jsonify({"message": "Category not found"}), 400
+
+    # Salva os dados atualizados de volta no arquivo
+    with open('products.json', 'w', encoding='utf-8') as file:
+        json.dump(products_data, file, indent=4)
+
+    return jsonify({"message": "Product created successfully"}), 201
+
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    if 'file' not in request.files:
+        return 'No file part', 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return 'No selected file', 400
+
+    file_url = upload_to_firebase(file)
+    if file_url:
+        return file_url, 200
+    else:
+        return 'Erro ao fazer upload do arquivo', 500
+
+
+# Endpoint para listar todos os produtos
+@app.route('/all_products', methods=['GET'])
+def list_all_products():
+    data = load_products()
+
+    all_products = []
+    # Iterar sobre todas as categorias e seus produtos
+    for category in data["products_by_category"]:
+        all_products.extend(category["products"])  # Adicionar todos os produtos à lista
+
+    return jsonify(all_products)  # Retorna a lista como JSON
+
+
+# SISTEMA DE BACKUP DO ARQUIVO .JSON de produtos
+
+
+
+
 # Endpoint para enviar o e-mail
 @app.route('/send-email', methods=['POST'])
 def send_email_route():
@@ -286,7 +298,75 @@ def send_email_route():
         return jsonify({"error": str(e)}), 500
 
 
+# Endpoint para retornar a quantidade de produtos em cada categoria
+@app.route('/products_count', methods=['GET'])
+def count_products_by_category():
+    products_data = load_products()
 
+    # Dicionário para armazenar a contagem de produtos por categoria
+    product_counts = {}
+
+    # Contar produtos em cada categoria
+    for category_data in products_data["products_by_category"]:
+        category_name = category_data["category"]
+        product_count = len(category_data["products"])
+        product_counts[category_name] = product_count
+
+    return jsonify(product_counts)
+
+
+# Endpoint para adicionar "product_video": false a todos os produtos
+@app.route('/add_product_video', methods=['POST'])
+def add_product_video():
+    data = load_products()
+
+    # Iterar sobre todas as categorias e produtos
+    for category in data.get('products_by_category', []):
+        for product in category.get('products', []):
+            # Adicionar o campo product_video com valor False
+            product['product_video'] = False
+
+    # Salvar as alterações no arquivo
+    save_products(data)
+
+    return jsonify({"message": "Campo 'product_video' adicionado com sucesso a todos os produtos."})
+
+
+
+@app.route('/update_product_video', methods=['POST'])
+def update_product_video():
+    data = request.get_json()
+    product_name = data['product_name']
+    new_status = data['product_video']
+
+    try:
+        # Usa a função auxiliar para carregar os produtos
+        products_data = load_products()
+    except FileNotFoundError:
+        return jsonify({"message": "File not found"}), 404
+    except json.JSONDecodeError:
+        return jsonify({"message": "Error decoding JSON"}), 400
+
+    product_found = False
+
+    # Procura o produto e altera o status do vídeo
+    for category in products_data['products_by_category']:
+        for product in category['products']:
+            if product['product_name'] == product_name:
+                product['product_video'] = new_status
+                product_found = True
+                break
+        if product_found:
+            break
+
+    if not product_found:
+        return jsonify({"message": "Product not found"}), 404
+
+    # Salva os dados atualizados com codificação UTF-8
+    with open('products.json', 'w', encoding='utf-8') as file:
+        json.dump(products_data, file, indent=4)
+
+    return jsonify({"message": "Product video status updated successfully"}), 200
 
 
 
