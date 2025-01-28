@@ -1,5 +1,8 @@
 import random
+
+import mercadopago
 import requests
+import stripe
 from flask import Flask, request, jsonify, redirect
 import json
 from flask_cors import CORS
@@ -49,17 +52,32 @@ firebase_admin.initialize_app(cred, {
 })
 
 
-# Função auxiliar para salvar o arquivo JSON
+# Função para salvar (sobrescrever) o arquivo products.json
 def save_products(data):
-    with open('products.json', 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    try:
+        with open('products.json', 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+    except IOError as e:
+        print(f"Erro ao salvar os dados no arquivo: {e}")
+        return False
+    return True
 
 
-# Sua função auxiliar para carregar o arquivo JSON
+# Função auxiliar para carregar o arquivo JSON
 def load_products():
-    with open('products.json', 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    return data
+    try:
+        with open('products.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data
+    except FileNotFoundError:
+        print("Arquivo 'products.json' não encontrado.")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Erro ao decodificar o arquivo JSON: {e}")
+        return None
+    except IOError as e:
+        print(f"Erro ao ler o arquivo: {e}")
+        return None
 
 
 # Função para garantir que o arquivo products.json tenha a estrutura inicial
@@ -111,38 +129,6 @@ def upload_to_firebase(file):
         return None
 
 
-# Função para enviar o e-mail
-def send_email(subject, body, file_path):
-    from_address = "binance.letmein@gmail.com"  # Seu e-mail
-    password = os.getenv("EMAIL_PASSWORD")  # Sua senha
-    print(password)
-
-    # Configura o servidor de e-mail (Gmail como exemplo)
-    server = smtplib.SMTP('smtp.gmail.com', 587)
-    server.starttls()
-    server.login(from_address, password)
-
-    # Cria a mensagem de e-mail
-    msg = MIMEMultipart()
-    msg['From'] = from_address
-    msg['To'] = "gabriel.user0100@gmail.com"
-    msg['Subject'] = subject
-
-    # Adiciona o corpo do e-mail
-    msg.attach(MIMEText(body, 'plain'))
-
-    # Anexa o arquivo JSON
-    with open(file_path, 'rb') as attachment:
-        part = MIMEBase('application', 'octet-stream')
-        part.set_payload(attachment.read())
-        encoders.encode_base64(part)
-        part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(file_path)}')
-        msg.attach(part)
-
-    # Envia o e-mail
-    server.sendmail(from_address, msg['To'], msg.as_string())  # Enviando para o mesmo endereço
-    server.quit()
-
 @app.route('/')
 def hello():
     return 'Hello, World!'
@@ -155,20 +141,29 @@ def get_products():
     data = request.get_json()
     category = data.get('category')
 
+    if not category:
+        return jsonify({"message": "Category is required"}), 400
+
     # Tenta abrir e carregar os dados do arquivo products.json
     try:
-        with open('products.json', 'r') as file:
+        with open('products.json', 'r', encoding='utf-8') as file:
             products_data = json.load(file)
     except FileNotFoundError:
         return jsonify({"message": "Products file not found"}), 404
+    except json.JSONDecodeError:
+        return jsonify({"message": "Error decoding products file"}), 500
 
     # Procura a categoria especificada
-    for category_entry in products_data['products_by_category']:
-        if category_entry['category'] == category:
-            # Embaralha a lista de produtos
-            products = category_entry['products']
-            random.shuffle(products)
-            return jsonify(products), 200
+    category_entry = next((entry for entry in products_data['products_by_category'] if entry['category'] == category),
+                          None)
+
+    if category_entry:
+        # Embaralha a lista de produtos
+        products = category_entry['products']
+        random.shuffle(products)
+        return jsonify(products), 200
+    else:
+        return jsonify({"message": "Category not found"}), 404
 
 
 # Endpoint para remover o produto pelo product_name
@@ -274,30 +269,6 @@ def list_all_products():
     return jsonify(all_products)  # Retorna a lista como JSON
 
 
-# SISTEMA DE BACKUP DO ARQUIVO .JSON de produtos
-
-
-
-
-# Endpoint para enviar o e-mail
-@app.route('/send-email', methods=['POST'])
-def send_email_route():
-    # Caminho do arquivo JSON
-    file_path = 'products.json'
-    if not os.path.exists(file_path):
-        return jsonify({"error": "Arquivo produtos.json não encontrado"}), 400
-
-    # Gera a data atual no formato desejado
-    current_date = datetime.now().strftime("%d/%m/%Y")  # Formato: dia/mês/ano
-    subject = f"Backup do dia {current_date}"  # Título do e-mail com a data
-
-    try:
-        send_email(subject, "Backup de products.json.", file_path)
-        return jsonify({"message": "E-mail enviado com sucesso!"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 # Endpoint para retornar a quantidade de produtos em cada categoria
 @app.route('/products_count', methods=['GET'])
 def count_products_by_category():
@@ -330,7 +301,6 @@ def add_product_video():
     save_products(data)
 
     return jsonify({"message": "Campo 'product_video' adicionado com sucesso a todos os produtos."})
-
 
 
 @app.route('/update_product_video', methods=['POST'])
@@ -369,104 +339,320 @@ def update_product_video():
     return jsonify({"message": "Product video status updated successfully"}), 200
 
 
+@app.route('/consulta-cep', methods=['POST'])
+def consulta_cep():
+    # Recebe o CEP enviado pelo cliente (esperando um JSON com o campo "cep")
+    data = request.get_json()
+    cep = data.get('cep')
 
+    # Verifica se o CEP foi fornecido
+    if not cep:
+        return jsonify({"error": "O campo 'cep' é obrigatório."}), 400
 
+    # Faz uma requisição para a API do ViaCep
+    url = f'https://viacep.com.br/ws/{cep}/json/'
+    response = requests.get(url)
 
+    # Se a resposta for bem-sucedida
+    if response.status_code == 200:
+        endereco_data = response.json()
 
+        # Verifica se o CEP é válido
+        if "erro" in endereco_data:
+            return jsonify({"error": "CEP inválido."}), 400
 
-
-
-
-
-
-
-@app.route('/pagbank', methods=['POST'])
-def pagbank():
-    def convertToCents(value):
-        return int(value * 100)
-
-    # Gera um reference_id único
-    reference_id = str(uuid.uuid4())
-
-    # Calcula a data de expiração (7 dias a partir da data e hora atual)
-    expiration_date = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S-03:00')
-
-    # Token da API PagBank
-    tokenPagBank = ("09bfed0e-65de-461e-aa00-66740ea3309972e2b4074ad584ed8221a93c184e80d2c35f-63d6-45f3-b30f"
-                    "-95c85edf1c2e")
-
-    # Url da API do Pagbank
-    url = "https://sandbox.api.pagseguro.com/checkouts"
-
-    # Recebe os dados do JSON enviado pelo front-end
-    items = request.json
-
-    # Mapeia os dados dos itens recebidos para o formato esperado pelo PagBank
-    formatted_items = []
-    for item in items:
-        formatted_item = {
-            "reference_id": reference_id,
-            "name": item["product_name"],
-            "quantity": 1,
-            "unit_amount": convertToCents(item["product_price"]),
-            "image_url": item["product_image"]
-        }
-        formatted_items.append(formatted_item)
-    payload = {
-        "customer": {
-            "Name": "Seu Nome",
-            "phone": {
-                "country": "+55",
-                "area": "11",
-                "number": "978327459"
-            },
-            "email": "seu_email@gmail.com",
-            "tax_id": "18055610576"
-        },
-        "shipping": {
-            "type": "FIXED",
-            "address_modifiable": True,
-            "amount": convertToCents(9.90)
-        },
-        "reference_id": reference_id,
-        "expiration_date": expiration_date,
-        "customer_modifiable": True,
-        "items": formatted_items,
-        "payment_methods": [
-            {
-                "type": "DEBIT_CARD"
-            },
-            {
-                "type": "PIX"
-            },
-            {
-                "type": "CREDIT_CARD"
-            }
-        ],
-        "soft_descriptor": "xxxx",
-        "redirect_url": "https://pagseguro.uol.com.br"
-    }
-    headers = {
-        "accept": "*/*",
-        "Authorization": "Bearer " + tokenPagBank,
-        "Content-type": "application/json"
-    }
-
-    response = requests.post(url, json=payload, headers=headers)
-
-    # Processa a resposta JSON para extrair o link com rel "PAY"
-    response_data = response.json()
-    pay_link = None
-    for link in response_data.get("links", []):
-        if link.get("rel") == "PAY":
-            pay_link = link.get("href")
-            break
-
-    if pay_link:
-        # Redireciona para o link de pagamento
-        return pay_link
+        # Retorna os dados do endereço
+        return jsonify(endereco_data)
     else:
-        return jsonify({"error": "Link de pagamento não encontrado"}), 400
+        return jsonify({"error": "Erro ao consultar o ViaCep."}), 500
+
+
+# EDITOR JSON
+
+
+@app.route('/categorias', methods=['GET'])
+def get_categories():
+    try:
+        # Abre o arquivo JSON
+        with open('categorias.json', 'r', encoding='utf-8') as file:
+            data = json.load(file)  # Lê o conteúdo do arquivo JSON
+
+        return jsonify(data)  # Retorna os dados para o front-end
+    except Exception as e:
+        # Em caso de erro, retorna uma mensagem de erro
+        return jsonify({"error": "Ocorreu um erro ao processar o arquivo", "message": str(e)}), 500
+
+
+@app.route('/update_categoriasJSON', methods=['POST'])
+def update_json_file2():
+    try:
+        # Recebe o JSON do frontend
+        updated_data = request.json
+
+        if not updated_data:
+            raise ValueError("Nenhum dado recebido ou JSON inválido.")
+
+        with open("categorias.json", 'w', encoding='utf-8') as file:
+            json.dump(updated_data, file, ensure_ascii=False, indent=4)
+
+        return jsonify({'message': 'JSON atualizado com sucesso!'})
+    except Exception as e:
+        # Adicione um log para ajudar a depurar
+        print(f"Erro ao atualizar o JSON: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/pedidosJSON', methods=['GET'])
+def get_json_file():
+    try:
+        with open("pedidos.json", 'r', encoding='utf-8') as file:
+            data = json.load(file)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/update_pedidosJSON', methods=['POST'])
+def update_json_file():
+    try:
+        # Recebe o JSON do frontend
+        updated_data = request.json
+
+        if not updated_data:
+            raise ValueError("Nenhum dado recebido ou JSON inválido.")
+
+        with open("pedidos.json", 'w', encoding='utf-8') as file:
+            json.dump(updated_data, file, ensure_ascii=False, indent=4)
+
+        return jsonify({'message': 'JSON atualizado com sucesso!'})
+    except Exception as e:
+        # Adicione um log para ajudar a depurar
+        print(f"Erro ao atualizar o JSON: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/productsJSON', methods=['GET'])
+def get_json_file5():
+    try:
+        with open("products.json", 'r', encoding='utf-8') as file:
+            data = json.load(file)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/update_produtosJSON', methods=['POST'])
+def update_json_file3():
+    try:
+        # Recebe o JSON do frontend
+        updated_data = request.json
+
+        if not updated_data:
+            raise ValueError("Nenhum dado recebido ou JSON inválido.")
+
+        with open("products.json", 'w', encoding='utf-8') as file:
+            json.dump(updated_data, file, ensure_ascii=False, indent=4)
+
+        return jsonify({'message': 'JSON atualizado com sucesso!'})
+    except Exception as e:
+        # Adicione um log para ajudar a depurar
+        print(f"Erro ao atualizar o JSON: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Oque quero fazer , primeiro enviar o email para o cliente, dizendo que o pedido foi feito com sucesso
+# depois outros emails, de compra finalizada com sucesso e que esta em andamento para entrega
+# no momento que ele faz o pedido, envia um email para mim mesmo com o Json de Pedidos e o json apenas dele
+#
+
+
+# SISTEMA DE BACKUP DO ARQUIVO .JSON de produtos
+# Endpoint para enviar o e-mail
+@app.route('/send-email', methods=['POST'])
+def send_email_route():
+    # Caminho do arquivo JSON
+    file_path = 'products.json'
+    if not os.path.exists(file_path):
+        return jsonify({"error": "Arquivo produtos.json não encontrado"}), 400
+
+    # Gera a data atual no formato desejado
+    current_date = datetime.now().strftime("%d/%m/%Y")  # Formato: dia/mês/ano
+    subject = f"Backup do dia {current_date}"  # Título do e-mail com a data
+
+    try:
+        send_email(subject, "Backup de products.json.", file_path)
+        return jsonify({"message": "E-mail enviado com sucesso!"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# Função para enviar o e-mail
+def send_email(subject, body, file_path):
+    from_address = "memeonmugs@gmail.com"  # Seu e-mail
+    password = os.getenv("EMAIL_PASSWORD")  # Sua senha
+    print(password)
+
+    # Configura o servidor de e-mail (Gmail como exemplo)
+    server = smtplib.SMTP('smtp.gmail.com', 587)
+    server.starttls()
+    server.login(from_address, password)
+
+    # Cria a mensagem de e-mail
+    msg = MIMEMultipart()
+    msg['From'] = from_address
+    msg['To'] = "gabriel.user0100@gmail.com"
+    msg['Subject'] = subject
+
+    # Adiciona o corpo do e-mail
+    msg.attach(MIMEText(body, 'plain'))
+
+    # Anexa o arquivo JSON
+    with open(file_path, 'rb') as attachment:
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(attachment.read())
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(file_path)}')
+        msg.attach(part)
+
+    # Envia o e-mail
+    server.sendmail(from_address, msg['To'], msg.as_string())  # Enviando para o mesmo endereço
+    server.quit()
+
+
+def send_email_dynamic(to, message, user_name, typeMsg):
+    from_address = "memeonmugs@gmail.com"  # Seu e-mail
+    password = os.getenv("EMAIL_PASSWORD")  # Senha do e-mail
+
+    if typeMsg == 0:
+        subject = "Novo Pedido realizado na Loja!"
+    elif typeMsg == 1:
+        subject = "Seu pedido foi registrado com sucesso!"
+    else:
+        subject = "Au Au Au Au"
+
+    # Configura o servidor de e-mail (Gmail como exemplo)
+    server = smtplib.SMTP('smtp.gmail.com', 587)
+    server.starttls()
+    server.login(from_address, password)
+
+    # Cria a mensagem de e-mail
+    msg = MIMEMultipart()
+    msg['From'] = from_address
+    msg['To'] = to
+    msg['Subject'] = subject
+
+    # Adiciona a mensagem ao corpo do e-mail
+    body = f"""
+    <html>
+        <body>
+            <h1>Olá, {user_name}!</h1>
+            <p>{message}</p>
+        </body>
+    </html>
+    """
+    msg.attach(MIMEText(body, 'html'))
+
+    # Envia o e-mail
+    try:
+        server.sendmail(from_address, to, msg.as_string())
+        print(f"E-mail enviado para {to} com sucesso!")
+    except Exception as e:
+        print(f"Erro ao enviar o e-mail: {e}")
+    finally:
+        server.quit()
+
+@app.route('/registrar-pedido', methods=['POST'])
+def registrar_pedido():
+    # Recebendo dados da requisição
+    data = request.get_json()
+
+    # Dados do cliente
+    email = data.get('email')
+    nome = data.get('nome')
+    cep = data.get('cep')
+    endereco = data.get('endereco')
+    numeroCasa = data.get('numeroCasa')
+
+    # Produtos do carrinho
+    produtos = data.get('produtos')
+
+    # Verifica se os campos estão preenchidos
+    if not email or not nome or not cep or not endereco or not numeroCasa or not produtos:
+        return jsonify({"message": "Todos os campos e os produtos são obrigatórios!"}), 400
+
+    # Registro da data e hora atual do pedido
+    data_hora_pedido = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Estrutura do pedido a ser salvo
+    pedido = {
+        'email': email,
+        'nome': nome,
+        'cep': cep,
+        'endereco': endereco,
+        'numeroCasa': numeroCasa,
+        'data_hora_pedido': data_hora_pedido,
+        'produtos': produtos
+    }
+
+    # Formata os produtos em HTML
+    produtos_html = "<h2>Detalhes do Pedido:</h2><ul>"
+    if produtos:
+        for produto in produtos:
+            nome = produto.get('product_name', 'Produto sem nome')
+            preco = produto.get('product_price', 'Preço não informado')
+            produtos_html += f"<li>{nome} - R$ {preco}</li>"
+    else:
+        produtos_html += "<li>Carrinho está vazio.</li>"
+    produtos_html += "</ul>"
+
+    # Formata os dados do pedido como HTML
+    pedido_html = f"""
+    <html>
+        <body>
+            <h1>Detalhes do Pedido</h1>
+            <p><strong>Nome:</strong> {pedido['nome']}</p>
+            <p><strong>E-mail:</strong> {pedido['email']}</p>
+            <p><strong>CEP:</strong> {pedido['cep']}</p>
+            <p><strong>Endereço:</strong> {pedido['endereco']}</p>
+            <p><strong>Número da casa:</strong> {pedido['numeroCasa']}</p>
+            <p><strong>Data e hora do pedido:</strong> {pedido['data_hora_pedido']}</p>
+            {produtos_html}
+        </body>
+    </html>
+    """
+
+    # Envia o e-mail para o cliente
+    send_email_dynamic(email, f"""
+    <h1>Seu pedido foi registrado com sucesso!</h1>
+    <p>Após a confirmação do pagamento, iremos preparar o envio da sua caneca.</p>
+    <p><strong>Data do pedido:</strong> {pedido['data_hora_pedido']}</p>
+    {pedido_html}
+    """, pedido['nome'], 1)
+
+    # Envia o e-mail para o administrador
+    send_email_dynamic("memeonmugs@gmail.com", f"""
+    <h1>{pedido['nome']} fez um pedido!</h1>
+    <p><strong>Data do pedido:</strong> {pedido['data_hora_pedido']}</p>
+    {pedido_html}
+    """, "Meme", 0)
+
+    # Verifica se o arquivo pedidos.json já existe
+    if os.path.exists('pedidos.json'):
+        # Se existir, lê o arquivo e adiciona o novo pedido
+        with open('pedidos.json', 'r', encoding='utf-8') as file:
+            pedidos = json.load(file)
+    else:
+        # Se não existir, cria uma nova lista de pedidos
+        pedidos = []
+
+    # Adiciona o novo pedido à lista
+    pedidos.append(pedido)
+
+    # Salva o pedido no arquivo pedidos.json
+    with open('pedidos.json', 'w', encoding='utf-8') as file:
+        json.dump(pedidos, file, ensure_ascii=False, indent=4)
+
+    return jsonify({"message": "Pedido registrado com sucesso!", "pedido": pedido}), 200
 
 
 if __name__ == '__main__':
