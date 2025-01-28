@@ -1,12 +1,12 @@
 import random
 
-import mercadopago
+
 import requests
-import stripe
-from flask import Flask, request, jsonify, redirect
+
+from flask import Flask, request, jsonify
 import json
 from flask_cors import CORS
-from datetime import datetime, timedelta
+from datetime import datetime
 import firebase_admin
 from firebase_admin import credentials, storage
 import uuid
